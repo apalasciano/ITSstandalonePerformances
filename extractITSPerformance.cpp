@@ -48,18 +48,6 @@ const int l6 = 0;
 
 using GIndex = o2::dataformats::VtxTrackIndex;
 
-template <typename TrackT>
-std::vector<TrackT>* fetchTracks(const char* filename, const char* treename, const char* branchname)
-{
-  TFile file(filename, "OPEN");
-  TChain* tracTree = new TChain("o2sim");
-  tracTree->AddFile(filename);
-  auto br = tracTree->GetBranch(branchname);
-  std::vector<TrackT>* tracks = nullptr;
-  br->SetAddress(&tracks);
-  return tracks;
-}
-
 void extractITSPerformance(){
   float vr = 0.1;
 
@@ -84,84 +72,90 @@ void extractITSPerformance(){
   auto hzB = new TH1D("hzB", "Impact parameter Z Bottom", 100, -vr, vr);
 
   // open the file for vertices
-  //char*  f = "o2_primary_vertex.root";
   TChain* pvTree = new TChain("o2sim");
-  pvTree->AddFile("o2_primary_vertex_old.root");//.data());
+  pvTree->AddFile("o2_primary_vertex.root");
   if(!pvTree) {
     printf("PV tree not found"); return;
   }
-  //auto t = (TTree*)f.Get("o2sim");
 
   // Reconstructed tracks
-  auto itstracks = fetchTracks<o2::its::TrackITS>("o2trac_its.root", "o2sim", "ITSTrack");
+  TFile file("o2trac_its.root", "OPEN");
+  TChain* trackTree = new TChain("o2sim");
+  trackTree->AddFile("o2trac_its.root");
+  if(!trackTree) {
+    printf("TRACK tree not found"); return;
+  }
 
-    if (pvTree) {
-        //reading primary vertex file
-        auto br = pvTree->GetBranch("PrimaryVertex");
-        std::vector<o2::dataformats::PrimaryVertex>* vertices = nullptr;
-        br->SetAddress(&vertices);
+  if (pvTree && trackTree) {
+    //reading primary vertex file
+    auto br = pvTree->GetBranch("PrimaryVertex");
+    std::vector<o2::dataformats::PrimaryVertex>* vertices = nullptr;
+    br->SetAddress(&vertices);
 
-        // this referes to actual tracks
-        auto indexbr = pvTree->GetBranch("PVTrackIndices");
-        std::vector<GIndex>* vertexTrackIDs = nullptr;
-        indexbr->SetAddress(&vertexTrackIDs);
+    // this referes to actual tracks
+    auto indexbr = pvTree->GetBranch("PVTrackIndices");
+    std::vector<GIndex>* vertexTrackIDs = nullptr;
+    indexbr->SetAddress(&vertexTrackIDs);
 
-        // this makes the connection of vertex to track indices
-        auto v2totrackrefbr = pvTree->GetBranch("PV2TrackRefs");
-        std::vector<o2::dataformats::VtxTrackRef>* v2trackref = nullptr;
-        v2totrackrefbr->SetAddress(&v2trackref);
-        
-        //if (!vertices) printf("vertices");
-        //if (!vertexTrackIDs) printf("vertexTrackIDs");
-        for(int ientry=0; ientry<pvTree->GetEntries(); ientry++){
-          br->GetEntry(ientry);
-          indexbr->GetEntry(ientry);
-          v2totrackrefbr->GetEntry(ientry);
+    // this makes the connection of vertex to track indices
+    auto v2totrackrefbr = pvTree->GetBranch("PV2TrackRefs");
+    std::vector<o2::dataformats::VtxTrackRef>* v2trackref = nullptr;
+    v2totrackrefbr->SetAddress(&v2trackref);
 
+    //defines track branch in o2track file
+    auto trackBranch = trackTree->GetBranch("ITSTrack");
+    std::vector<o2::its::TrackITS>* itstracks= nullptr; 
+    trackBranch->SetAddress(&itstracks);
+    
+    for(int ientry=0; ientry<pvTree->GetEntries(); ientry++){
+      br->GetEntry(ientry);
+      indexbr->GetEntry(ientry);
+      v2totrackrefbr->GetEntry(ientry);
+      trackBranch->GetEntry(ientry);
 
-          if (vertices && vertexTrackIDs) {
-            //printf("BLA: vertices size %d\n", vertices->size());
-            int index = 0;
-            for (auto& v : *vertices) {
-              int BCid = 0;
-              auto& cov = v.getCov();
-              auto& ts = v.getTimeStamp();
+      if (vertices && vertexTrackIDs) {
+        //printf("BLA: vertices size %d\n", vertices->size());
+        int index = 0;
+        for (auto& v : *vertices) {
+          int BCid = 0;
+          auto& cov = v.getCov();
+          auto& ts = v.getTimeStamp();
 
-              // now go over tracks via the indices
-              auto& trackref = (*v2trackref)[index];
-              int start = trackref.getFirstEntryOfSource(0);
-              int ntracks = trackref.getEntriesOfSource(0);
-              //printf("Start: %d, track vertex %d",start,ntracks);
-              for (int ti = 0; ti < ntracks; ++ti) {
-                auto trackindex = (*vertexTrackIDs)[start + ti];
+          // now go over tracks via the indices
+          auto& trackref = (*v2trackref)[index];
+          int start = trackref.getFirstEntryOfSource(0);
+          int ntracks = trackref.getEntriesOfSource(0);
+          //printf("Start: %d, track vertex %d",start,ntracks);
+          for (int ti = 0; ti < ntracks; ++ti) {
+            auto trackindex = (*vertexTrackIDs)[start + ti];
 
-                //fetching the actual tracks
-                const auto source = trackindex.getSource();
-                o2::its::TrackITS* trackIts = nullptr;
-                trackIts = &((*itstracks)[trackindex.getIndex()]);
-                //take track interesting variables
-                std::array<float, 3> pxpypz;
-                trackIts->getPxPyPzGlo(pxpypz);
-                Float_t ip[2]{0., 0.};
-                trackIts->getImpactParams(v.getX(), v.getY(), v.getZ(), 5., ip);
-                hdpt->Fill(trackIts->getPt(), ip[0]);
-                hzpt->Fill(trackIts->getPt(), ip[1]);
-                if (pxpypz[1] > 0) {
-                    hdT->Fill(ip[0]);
-                    hzT->Fill(ip[1]);
-                } else {
-                    hdB->Fill(ip[0]);
-                    hzB->Fill(ip[1]);
-                }
-                double phi = TMath::ATan2((double)pxpypz[1], (double)pxpypz[0]);
-                if (phi < 0) phi += 6.28318;
-                    hd->Fill(phi, ip[0]);
-                } //end track per PVvertex 
-                index++;
-            }//end vertices
-          } //end if vertices
-        } //loop over tree entries
-    } // end tree inspection
+            //fetching the actual tracks
+            const auto source = trackindex.getSource();
+            o2::its::TrackITS* trackIts = nullptr;
+            trackIts = &((*itstracks)[trackindex.getIndex()]);
+            //take track interesting variables
+            std::array<float, 3> pxpypz;
+            trackIts->getPxPyPzGlo(pxpypz);
+            Float_t ip[2]{0., 0.};
+            trackIts->getImpactParams(v.getX(), v.getY(), v.getZ(), 5., ip);
+            hdpt->Fill(trackIts->getPt(), ip[0]);
+            hzpt->Fill(trackIts->getPt(), ip[1]);
+            if (pxpypz[1] > 0) {
+                hdT->Fill(ip[0]);
+                hzT->Fill(ip[1]);
+            } else {
+                hdB->Fill(ip[0]);
+                hzB->Fill(ip[1]);
+            }
+            double phi = TMath::ATan2((double)pxpypz[1], (double)pxpypz[0]);
+            if (phi < 0) phi += 6.28318;
+                hd->Fill(phi, ip[0]);
+            } //end track per PVvertex 
+            index++;
+        }//end vertices
+      } //end if vertices
+    } //loop over tree entries
+  } // end tree inspection
   
    //output plots
   TFile *fout=new TFile("itsStandalonePerformances.root", "RECREATE");
